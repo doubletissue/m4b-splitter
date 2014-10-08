@@ -22,9 +22,9 @@ class Threadpool:
             t.start()
             self.threads.append(t)
     
-    def add_work(self, work_unit):
+    def add_work(self, work_unit, replace):
         self.lock.acquire()
-        self.work.append(work_unit)
+        self.work.append( (work_unit, replace) )
         self.lock.release()
 
     def join(self):
@@ -43,15 +43,25 @@ class Threadpool:
             elif not self.work:
                 self.lock.release()
                 continue
-            work_unit = self.work.popleft()
+            work_unit, replace = self.work.popleft()
+            print len(self.work),"left"
             print ' '.join(work_unit)
             self.lock.release()
-            subprocess.call(work_unit)
+            proc = subprocess.Popen(work_unit,stdin=subprocess.PIPE)
+            if replace == 'yes':
+                proc.communicate('y')
+            elif replace == 'no':
+                proc.communicate('n')
+            else:
+                c = raw_input().lower()
+                while c != 'y' and c != 'n':
+                    c = raw_input().lower()
+                proc.communicate(c)
 
 # Function that does all the work. Walks over the directory recursively and splits all
 # m4b audiobook files it finds using the chapter metadata into files specified by the 
 # output_format. It will use a threadpool with num_threads threads.
-def convert_files(directory, output_format, num_threads):
+def convert_files(directory, output_format, num_threads, replace):
 
     threadpool = Threadpool(num_threads)
     
@@ -103,23 +113,27 @@ def convert_files(directory, output_format, num_threads):
                         # Simple but lengthy new filename if there is no title
                         title = filename.replace('.m4b','') + '_' + chapter_num + '.' + chapter_subnum
                     new_filename = title + '.' + output_format
-                    subprocess.call(['rm',os.path.join(dirpath,new_filename)])
+                    # subprocess.call(['rm',os.path.join(dirpath,new_filename)])
                     command = ['ffmpeg',
                                '-ss',start_time,
                                '-t',duration,
                                '-metadata','title='+title,
                                '-metadata','track='+track,
                                '-i',os.path.join(dirpath,filename),os.path.join(dirpath,new_filename)]
-                    threadpool.add_work(command)
+                    threadpool.add_work(command, replace)
     threadpool.join()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Convert audiobook files')
     parser.add_argument('directory', help='directory to crawl for files')
-    parser.add_argument('-o', '--output', dest='output', action='store', default='mp3', help='Output format')
+    parser.add_argument('-o', '--output', dest='output', action='store', 
+                        default='mp3', help='Output format')
     parser.add_argument('-n', '--num-threads', dest='num_threads', type=int, 
                         action='store', default=1, help='Number of threads to convert with')
+    parser.add_argument('-r', '--replace', dest='replace', action='store', 
+                        default='no', choices=['yes','no','ask'], 
+                        help='replace already existing files; "ask" will result in being prompted for each. "ask" will have unknown consequences with multithreading')
     
     args = parser.parse_args()
-    convert_files(args.directory, args.output, args.num_threads)
+    convert_files(args.directory, args.output, args.num_threads, args.replace)
     # convert_files('/home/dan/Downloads/The Teaching Company~Burnedheal~')
