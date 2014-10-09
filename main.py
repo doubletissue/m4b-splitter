@@ -7,9 +7,10 @@ import threading
 from collections import deque
 
 # Simple threadpool to handle multithreaded conversion.
-# It expects a "work unit" to be a list of arguments to
-# be passed into a subprocess call. Add all your work, 
-# then call "join" to wait for it to finish.
+# It expects a "work unit" to be a pair: a list of arguments to
+# be passed into a subprocess call, and an optional paramter to 
+# determine input to the program once it starts. Add all your 
+# work, then call "join" to wait for it to finish.
 class Threadpool:
     def __init__(self, num_threads):
         self.work = deque()
@@ -22,9 +23,9 @@ class Threadpool:
             t.start()
             self.threads.append(t)
     
-    def add_work(self, work_unit, replace):
+    def add_work(self, work_set):
         self.lock.acquire()
-        self.work.append( (work_unit, replace) )
+        self.work.append(work_set)
         self.lock.release()
 
     def join(self):
@@ -43,20 +44,27 @@ class Threadpool:
             elif not self.work:
                 self.lock.release()
                 continue
-            work_unit, replace = self.work.popleft()
             print len(self.work),"left"
-            print ' '.join(work_unit)
+            work_set = self.work.popleft()
             self.lock.release()
-            proc = subprocess.Popen(work_unit,stdin=subprocess.PIPE)
-            if replace == 'yes':
-                proc.communicate('y')
-            elif replace == 'no':
-                proc.communicate('n')
-            else:
-                c = raw_input().lower()
-                while c != 'y' and c != 'n':
-                    c = raw_input().lower()
-                proc.communicate(c)
+            for work_unit in work_set:
+                command = work_unit[0]
+                if len(work_unit) == 1:
+                    print command
+                    proc = subprocess.Popen(command)
+                else:
+                    proc = subprocess.Popen(command,stdin=subprocess.PIPE)
+                    replace = work_unit[1]
+                    print command, replace
+                    if replace == 'yes':
+                        proc.communicate('y')
+                    elif replace == 'no':
+                        proc.communicate('n')
+                    else:
+                        c = raw_input().lower()
+                        while c != 'y' and c != 'n':
+                            c = raw_input().lower()
+                        proc.communicate(c)
 
 # Function that does all the work. Walks over the directory recursively and splits all
 # m4b audiobook files it finds using the chapter metadata into files specified by the 
@@ -112,22 +120,36 @@ def convert_files(directory, output_format, num_threads, replace):
                         print chapter_match.groups()
                         # Simple but lengthy new filename if there is no title
                         title = filename.replace('.m4b','') + '_' + chapter_num + '.' + chapter_subnum
-                    new_filename = title + '.' + output_format
-                    # subprocess.call(['rm',os.path.join(dirpath,new_filename)])
-                    command = ['ffmpeg',
-                               '-ss',start_time,
-                               '-t',duration,
-                               '-metadata','title='+title,
-                               '-metadata','track='+track,
-                               '-i',os.path.join(dirpath,filename),os.path.join(dirpath,new_filename)]
-                    threadpool.add_work(command, replace)
+                    temp_filename = title + '.m4a'
+                    final_filename = title + '.' + output_format
+                    cut_command = ['ffmpeg',
+                                   '-ss',start_time,
+                                   '-t',duration,
+                                   '-acodec', 'copy',
+                                   '-metadata','title='+title,
+                                   '-metadata','track='+track,
+                                   '-i',os.path.join(dirpath,filename),
+                                   os.path.join(dirpath,temp_filename)]
+                    convert_command = ['ffmpeg',
+                                       '-metadata','title='+title,
+                                       '-metadata','track='+track,
+                                       '-i',os.path.join(dirpath,temp_filename),
+                                       os.path.join(dirpath,final_filename)]
+                    rm_command = ['rm',temp_filename]
+                    if output_format == 'm4a':
+                        command_set = [ (cut_command,replace) ]
+                    else:
+                        command_set = [ (cut_command,replace),
+                                        (convert_command, replace),
+                                        (rm_command) ]
+                    threadpool.add_work(command_set)
     threadpool.join()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Convert audiobook files')
     parser.add_argument('directory', help='directory to crawl for files')
     parser.add_argument('-o', '--output', dest='output', action='store', 
-                        default='mp3', help='Output format')
+                        default='m4a', help='Output format')
     parser.add_argument('-n', '--num-threads', dest='num_threads', type=int, 
                         action='store', default=1, help='Number of threads to convert with')
     parser.add_argument('-r', '--replace', dest='replace', action='store', 
@@ -136,4 +158,3 @@ if __name__ == '__main__':
     
     args = parser.parse_args()
     convert_files(args.directory, args.output, args.num_threads, args.replace)
-    # convert_files('/home/dan/Downloads/The Teaching Company~Burnedheal~')
